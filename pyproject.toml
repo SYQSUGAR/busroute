@@ -1,0 +1,15 @@
+[project]
+name = "amap-transit-collector"
+version = "0.1.0"
+description = "Desktop collector for AMap bus lines and stops with station aggregation."
+requires-python = ">=3.11"
+dependencies = [
+  "PySide6>=6.8,<7",
+  "requests>=2.32,<3",
+  "openpyxl>=3.1,<4",
+  "keyring>=25,<26",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
