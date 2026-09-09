@@ -27,7 +27,7 @@ jobs:
 
       - name: Build
         run: |
-          pyinstaller --noconfirm --clean --windowed --name TransitCollector --collect-all keyring --collect-all geopandas --collect-all pyogrio --collect-all pyproj --collect-all shapely app.py
+          pyinstaller --noconfirm --clean --windowed --name TransitCollector --collect-all keyring --collect-all geopandas --collect-all pyogrio --collect-all pyproj --collect-all shapely --collect-all transbigdata app.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
