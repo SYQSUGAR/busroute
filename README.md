@@ -1,379 +1,237 @@
-# 公交线路与站点 GIS 采集分析器（AMap Transit Collector）
+# 公交线路与站点 GIS 采集分析器
 
-一个面向 **城市体检 / 交通分析 / GIS 数据生产** 的 Windows 桌面工具。输入高德 Web 服务 API Key 后，可按“单城市”或“省域”选择行政范围，自动采集公交站点和公交线路，并进一步生成 GeoPackage / Shapefile 矢量数据，完成公交站点服务半径覆盖率分析。
+面向 **城市体检 / 交通分析 / GIS 数据生产** 的 Windows 桌面工具。当前版本 `v0.3.0` 支持两套公交数据源：
 
-> 本项目只调用高德开放平台公开 Web 服务接口，不包含抓包、绕过鉴权或非公开接口。
+- **TransBigData / 百度线路（默认、推荐）**：公交线路和站点抓取不需要高德 Key；
+- **高德 Web 服务（保留原模式）**：使用高德 Web Service Key，通过行政区、公交站 POI、公交线路 ID 链路采集。
 
-## v0.2 架构
+采集完成后统一进入 SQLite → GeoPandas/Shapely → GeoPackage / Shapefile → 服务覆盖分析的 GIS 流程。
 
-程序现在分为两部分：
+## 为什么改成 TransBigData 模式
 
-```text
-高德 API
-   ↓
-requests + SQLite
-公交线路 / 公交站 / 站序 / 线路-站点关系
-   ↓
-GeoPandas + Shapely + pyogrio + pyproj
-   ↓
-Point / LineString / Polygon
-   ↓
-GeoPackage / SHP / GeoJSON
-   ↓
-Buffer / Union / Intersection / Area
-   ↓
-公交站服务覆盖率与分区统计
+旧版脚本的核心逻辑是：
+
+```python
+lines = getALLbusline(cityE)           # 8684.cn 获取全市线路名称
+line, stop = transbigdata.getbusdata(
+    city=city,
+    keywords=lines,
+    accurate=True,
+    timeout=20,
+)
 ```
 
-**SQLite 负责采集、关系数据和断点续采；GeoPandas/Shapely 负责矢量建库和空间分析。**
+其中真正获取公交线路几何和站点序列的是 `transbigdata.getbusdata`。旧脚本失效的主要原因是 **8684.cn 的城市公交线路目录不再可可靠使用**，并不是 TransBigData 的线路抓取逻辑本身必须依赖 8684。
 
-## 主要功能
-
-### 1. 公交数据采集
-
-- 高德 Web 服务 Key 输入、测试，可选使用系统凭据库安全记忆 Key。
-- 范围模式：
-  - **单城市**：搜索结果自动限定为城市级行政区；北京、上海、天津、重庆按城市处理。
-  - **省域**：搜索结果限定为省级行政区，采集时自动遍历省内城市。
-- 公交数据链：
-  1. 获取行政区边界；
-  2. 通过 POI 多边形搜索发现公交站；
-  3. 高密度区域自动四叉细分网格；
-  4. 通过公交站接口取得站点 ID 和经过线路 ID；
-  5. 通过线路 ID 获取完整公交线路；
-  6. 保存线路全部站点、坐标、站点序号 `sequence`；
-  7. 按“标准化站名 + 空间距离”合并同一物理站点；
-  8. 建立站点—线路多对多关系。
-- SQLite 实时落盘，可停止、关闭、配额恢复后继续采集。
-- GUI 显示 API 调用数、POI、原始公交站、线路、合并站点、进度和日志。
-
-### 2. GIS 矢量建库
-
-一键把数据库转换为标准 GIS 图层：
-
-- `bus_stations`：合并后的实际公交站，Point
-- `bus_routes`：公交线路，LineString
-- `route_stops`：线路中的逐站点序列，Point
-
-主输出：
+新版因此移除了 `8684.cn`，改成：
 
 ```text
-transit_gis.gpkg
+输入城市名
+   ↓
+百度地图分页宽泛搜索
+（公交/专线/城际/机场/环线/旅游/高铁等）
+   ↓
+数字线路 + 常见前缀扫描
+1-999 路 + K/B/Y/夜/游/快
+   ↓
+线路关键词去重
+   ↓
+transbigdata.getbusdata(...)
+   ↓
+线路 LineString + 站点序列 Point
 ```
 
-兼容输出：
+也就是说，**仍然使用你原来 TransBigData 的公交抓取方式**，只是把失效的“线路名称清单来源”换掉了。
+
+## TransBigData 线路发现模式
+
+桌面端新增“数据源”和“线路扫描”设置。
+
+### 完整扫描（默认）
+
+- `1路` ～ `999路`
+- `K1路` ～ `K199路`
+- `B1路` ～ `B199路`
+- `Y1路` ～ `Y199路`
+- `夜1路` ～ `夜199路`
+- `游1路` ～ `游199路`
+- `快1路` ～ `快199路`
+- 同时分页检索公交、专线、城际、机场、环线、快线、夜班、旅游、高铁等命名线路
+- 支持用户额外填写当地特殊线路名称，例如 `榆横城际公交`
+
+### 快速扫描
+
+用于先测试城市是否可正常抓取：
+
+- 数字线路扫描到 `300路`
+- 常见前缀扫描到 `99路`
+- 命名线路分页深度较低
+
+完整扫描覆盖面更高，但请求数量更大。
+
+## 断点续采
+
+TransBigData 模式不再一次性把所有工作放在内存中。SQLite 新增状态表：
+
+- `tbd_probe`：记录哪些线路关键词已经探测；
+- `tbd_line_keywords`：记录已经发现的实际线路关键词；
+- `tbd_fetch_state`：记录哪些线路已经交给 TransBigData 获取。
+
+中途停止或程序关闭后，再次选择同一城市和同一输出目录即可继续。
+
+数据库文件示例：
 
 ```text
-shp/
-├─ bus_stations.shp
-├─ bus_routes.shp
-└─ route_stops.shp
+transit_tbd_榆林市.sqlite
 ```
 
-同时输出：
+## TransBigData 的数据来源说明
+
+当前固定使用：
 
 ```text
-stations_wgs84.geojson
-bus_routes_wgs84.geojson
-gis_metadata.json
+transbigdata==0.5.3
 ```
 
-### 3. 公交站服务覆盖率分析
+`getbusdata` 内部使用百度地图网页搜索获取城市代码、公交线路 UID、线路几何和站点信息。该方法不要求用户提供高德 Web Key。
 
-桌面端增加 **“GIS分析”** 标签页，可以选择：
+需要注意：这属于 TransBigData 已有的数据获取实现，其依赖的百度网页端请求不是面向第三方长期稳定承诺的正式开放 API，未来百度网页接口变化时仍可能需要适配。因此软件保留高德 Web 服务采集模式作为另一条数据链。
 
-- 公交 SQLite 数据库
-- 建成区 / 居住用地 / 街区 / 社区 / 自定义 Polygon 图层
-- 服务半径，默认 `500 m`
-- GPKG 多图层时的 layer 名
-- 自动投影或手动指定米制投影 CRS
-- 是否同时输出 Shapefile
+同时，不论是关键词扫描还是第三方地图底库，都不能承诺数学意义上的“100% 全量”。正式成果建议与公交企业/交通主管部门线路台账抽检。
 
-分析过程：
+## 坐标处理
+
+TransBigData `getbusdata` 返回 WGS84 数据。
+
+为让两套采集源共用同一个 SQLite 和 GIS 处理流程，程序内部会把 TransBigData WGS84 临时标准化到 GCJ-02 数据库存储体系；GIS 导出时再通过统一的坐标转换流程生成 `EPSG:4326` 图层。
+
+因此对外 GIS 成果仍统一为：
 
 ```text
-公交站
+EPSG:4326 / WGS84
+```
+
+500m Buffer、面积和覆盖率分析不会直接在经纬度上计算，而是自动估算当地 UTM 米制投影，或使用用户指定的米制 CRS。
+
+## GIS 输出
+
+一键导出会生成：
+
+```text
+CSV
+├─ bus_lines.csv
+├─ bus_line_stops.csv
+├─ stations_merged.csv
+├─ station_lines.csv
+└─ stops_raw.csv
+
+Excel
+└─ 公交线路与站点.xlsx
+
+GeoPackage
+└─ transit_gis.gpkg
+   ├─ bus_stations
+   ├─ bus_routes
+   └─ route_stops
+
+Shapefile
+└─ shp/
+   ├─ bus_stations.shp
+   ├─ bus_routes.shp
+   └─ route_stops.shp
+```
+
+### `bus_stations`
+
+合并后的物理公交站点：
+
+- `station_id`
+- 站点名称
+- 经过线路数
+- 经过线路名称/ID
+- Point geometry
+
+### `bus_routes`
+
+一条线路/方向一条记录：
+
+- `line_id`
+- 线路名称
+- 起终点
+- 方向
+- LineString geometry
+
+### `route_stops`
+
+保留线路—站点—站序关系：
+
+- `line_id`
+- `station_id`
+- `raw_stop_id`
+- `sequence`
+- `stop_name`
+- Point geometry
+
+因此既能回答“这个站经过哪些线路”，也能回答“一条线路按什么顺序经过哪些站”。
+
+## 站点合并
+
+地图数据常把道路两侧同名站点作为不同记录。程序当前按照：
+
+```text
+标准化站名相同 + 空间距离 <= 合并半径
+```
+
+聚合物理站点，默认半径 `120m`，桌面端可调整。
+
+## 公交站 500m 覆盖分析
+
+“GIS分析”页签可以选择：
+
+- 建成区
+- 居住用地
+- 社区
+- 街区
+- 其他 Polygon / MultiPolygon 图层
+
+程序自动执行：
+
+```text
+公交站点
    ↓
-投影到本地米制 CRS
+投影至米制 CRS
    ↓
-Buffer 500m
+500m Buffer
    ↓
-Union / Dissolve
+Union
    ↓
 与分析范围 Intersection
    ↓
-面积统计
+覆盖面积 / 总面积
+   ↓
+覆盖率
 ```
 
-总体覆盖率：
+并输出 `coverage_analysis.gpkg`、统计 JSON 以及可选 SHP。
 
-```text
-覆盖率 = 公交站服务范围与分析范围重叠面积 / 分析范围总面积 × 100%
-```
+## 高德 Web 服务模式
 
-输入范围图层是什么，分母就是什么。例如：
-
-- 输入“建成区” → 建成区公交站覆盖率
-- 输入“居住用地” → 居住用地公交服务覆盖率
-- 输入“社区” → 自动计算各社区覆盖率
-- 输入“街区” → 自动计算各街区覆盖率
-
-如果输入图层包含多个 Polygon，程序会同时形成逐要素覆盖率统计。
-
-覆盖分析输出：
-
-```text
-coverage_analysis.gpkg
-├─ analysis_zones
-├─ service_area
-├─ covered_area
-└─ uncovered_area
-```
-
-以及：
-
-```text
-shp/
-├─ coverage_zones.shp
-├─ service_area.shp
-├─ covered_area.shp
-└─ uncovered_area.shp
-
-coverage_summary.json
-```
-
-## 一键导出内容
-
-点击主界面的“导出 CSV / Excel / GIS”后，会生成：
-
-```text
-bus_lines.csv
-bus_line_stops.csv
-stations_merged.csv
-station_lines.csv
-stops_raw.csv
-公交线路与站点.xlsx
-
-transit_gis.gpkg
-stations_wgs84.geojson
-bus_routes_wgs84.geojson
-gis_metadata.json
-
-shp/
-├─ bus_stations.shp
-├─ bus_routes.shp
-└─ route_stops.shp
-
-summary.json
-```
-
-## 数据关系
-
-### `bus_lines`
-
-一行一条公交线路 / 方向：
-
-- `line_id`
-- `name`
-- `type`
-- `start_stop`
-- `end_stop`
-- `start_time`
-- `end_time`
-- `distance`
-- `loop`
-- `status`
-- `direc`
-- `company`
-- `polyline`
-
-### `bus_line_stops`
-
-一行表示“某条线路的某个站序”：
-
-- `line_id`
-- `line_name`
-- `sequence`
-- `station_id`
-- `raw_stop_id`
-- `stop_name`
-- `longitude`
-- `latitude`
-
-### `stations_merged`
-
-按“标准化站名 + 空间距离”聚合后的物理站点：
-
-- `station_id`
-- `name`
-- `longitude`
-- `latitude`
-- `member_count`
-- `line_count`
-- `line_ids`
-- `line_names`
-- `raw_stop_ids`
-
-这张表可直接回答：
-
-> 这个站点有哪些公交线路经过？
-
-### `station_lines`
-
-标准化的站点—线路关系：
-
-- `station_id`
-- `station_name`
-- `line_id`
-- `line_name`
-- `start_stop`
-- `end_stop`
-
-## 为什么仍然保留 SQLite
-
-不建议在采集阶段直接把 SHP 当数据库。
-
-SQLite 更适合：
-
-- 断点续采
-- API 请求进度
-- 一条线路多个站点
-- 一个站点多条线路
-- 原始站点与合并站点关系
-- 去重
-- 查询和更新
-
-空间成果生成时，再把数据库转换为 GeoDataFrame。
-
-因此程序采用：
-
-```text
-采集和关系管理：SQLite
-空间几何与分析：GeoPandas / Shapely
-最终成果：GeoPackage + SHP
-```
-
-## 为什么 GeoPackage 是主格式
-
-虽然程序会自动输出 SHP，但推荐正式工作优先使用：
-
-```text
-transit_gis.gpkg
-```
-
-原因：
-
-- 一个文件可包含多个图层
-- 字段名没有 SHP 的 10 字符限制
-- 长文本限制更少
-- 中文属性更稳定
-- 更适合站点、线路、线路站点等多图层数据
-- ArcGIS Pro 和 QGIS 均可直接读取
-
-Shapefile 主要作为传统 ArcGIS 工作流的兼容格式。
-
-## 坐标系处理
-
-### 原始数据
-
-高德境内坐标属于：
-
-```text
-GCJ-02
-```
-
-GCJ-02 没有标准 EPSG 编码，因此不能直接把原始高德坐标错误标记为 `EPSG:4326`。
-
-### GIS 输出
-
-程序在生成标准 GIS 图层时执行：
-
-```text
-GCJ-02
-  ↓
-迭代近似反算
-  ↓
-WGS84
-  ↓
-EPSG:4326
-```
-
-因此：
-
-- 原始 SQLite / CSV 坐标仍是高德 GCJ-02
-- `transit_gis.gpkg`、SHP、`*_wgs84.geojson` 使用标准 WGS84 几何
-
-GCJ-02 → WGS84 属于近似反算，不应把它理解为国家测绘成果的法定坐标转换。如果项目有严格坐标精度要求，应使用项目统一的正式坐标成果进行校核。
-
-### 距离与面积
-
-程序绝不会直接在经纬度上执行：
-
-```python
-point.buffer(500)
-```
-
-覆盖分析会自动：
-
-```text
-WGS84
-  ↓
-estimate_utm_crs()
-  ↓
-本地 UTM 米制投影
-  ↓
-500m Buffer / Area
-```
-
-也可以在 GUI 中手动指定，例如：
-
-```text
-EPSG:32649
-```
-
-手动 CRS 必须是以米为线性单位的投影坐标系。
-
-## 为什么采用“站点优先”的采集方式
-
-高德公开公交接口没有一个“列出某城市全部公交线路”的单一接口。
-
-如果简单枚举：
-
-```text
-1路
-2路
-3路
-K1路
-……
-```
-
-会漏掉很多线路，也会产生大量无效请求。
-
-本程序使用：
+原来的高德采集链仍然保留：
 
 ```text
 行政区边界
-  ↓
-公交站 POI 空间发现
-  ↓
-公交站线路 ID
-  ↓
-公交线路 ID 详情
+→ 公交站 POI 空间发现
+→ 站点公交线路 ID
+→ 线路 ID 详情
 ```
 
-高密度 POI 区域会自动细分空间网格，以提高城市级覆盖率。
+该模式必须使用 **服务平台=Web服务** 的高德 Key。JS API Key / `securityJsCode` 不能替代 Web Service Key。
 
-需要注意：第三方地图搜索接口不能对底库“数学意义上的 100% 全量”作保证。正式成果建议与交通主管部门或公交企业线路台账抽检。
+TransBigData 模式则无需填写高德 Key。
 
-## 安装
+## 安装运行
 
-建议：
-
-```text
-Python 3.11
-```
-
-Windows：
+建议 Python 3.11：
 
 ```bash
 python -m venv .venv
@@ -382,53 +240,26 @@ pip install -r requirements.txt
 python app.py
 ```
 
-主要依赖：
+也可双击：
 
 ```text
-PySide6
-requests
-SQLite (Python 内置)
-GeoPandas
-Shapely
-pyproj
-pyogrio
-openpyxl
-keyring
+run_windows.bat
 ```
 
 ## Windows 打包
-
-双击：
 
 ```text
 build_windows.bat
 ```
 
-脚本会把：
+PyInstaller 会一起收集：
 
+- PySide6
 - GeoPandas
 - Shapely
 - pyproj
 - pyogrio
-- keyring
-
-相关数据文件一起交给 PyInstaller 收集。
-
-也可以执行：
-
-```bash
-pyinstaller ^
-  --noconfirm ^
-  --clean ^
-  --windowed ^
-  --name TransitCollector ^
-  --collect-all keyring ^
-  --collect-all geopandas ^
-  --collect-all pyogrio ^
-  --collect-all pyproj ^
-  --collect-all shapely ^
-  app.py
-```
+- TransBigData
 
 输出：
 
@@ -436,74 +267,35 @@ pyinstaller ^
 dist/TransitCollector/
 ```
 
-仓库内 `.github/workflows/build-windows.yml` 也会在 Windows Runner 上运行测试并打包。
+GitHub Actions 也保留自动测试和 Windows 构建流程。
 
-## 操作流程
-
-### 采集
-
-1. 输入 Web Key。
-2. 测试 Key。
-3. 选择“单城市”或“省域”。
-4. 搜索并选择行政区。
-5. 设置请求间隔、站点合并半径。
-6. 选择输出目录。
-7. 开始 / 继续采集。
-8. 完成后导出 CSV / Excel / GIS。
-
-### GIS 分析
-
-1. 打开“GIS分析”标签页。
-2. 使用当前公交数据库，或选择已有 `.sqlite`。
-3. 选择 Polygon 分析范围。
-4. GPKG 如有多个图层，可输入 layer 名。
-5. 设置服务半径，例如 `500 m`。
-6. 分析 CRS 留空即可自动选择。
-7. 点击“计算公交站服务覆盖率”。
-8. 查看总体覆盖率和各分区覆盖率。
-9. 在输出目录中获取 GPKG / SHP。
-
-## 测试
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-测试包括：
-
-- 站点合并
-- 表格导出
-- GCJ-02 / WGS84 转换回归
-- Point / LineString GIS 图层生成
-- GPKG / SHP 输出
-- 500m 服务范围覆盖分析
-
-## 目录结构
+## 项目结构
 
 ```text
 .
 ├─ app.py
 ├─ transit_collector/
-│  ├─ api/
-│  │  └─ amap.py
-│  ├─ ui/
-│  │  ├─ main_window.py
-│  │  └─ integrated_window.py
+│  ├─ api/amap.py
 │  ├─ crawler.py
+│  ├─ transbigdata_backend.py
+│  ├─ transbigdata_adapter.py
 │  ├─ db.py
 │  ├─ exporter.py
 │  ├─ gis.py
-│  └─ utils.py
+│  ├─ utils.py
+│  └─ ui/
+│     ├─ main_window.py
+│     ├─ integrated_window.py
+│     └─ transbigdata_window.py
 ├─ tests/
 │  ├─ test_core.py
-│  └─ test_gis.py
+│  ├─ test_gis.py
+│  └─ test_transbigdata_backend.py
 ├─ requirements.txt
-├─ pyproject.toml
 ├─ build_windows.bat
-├─ run_windows.bat
-└─ .github/workflows/build-windows.yml
+└─ .github/workflows/
 ```
 
 ## License
 
-MIT
+MIT（本项目自身代码）。TransBigData 使用其自身 BSD 许可证。
