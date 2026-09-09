@@ -9,7 +9,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from transit_collector.db import TransitDB
-from transit_collector.utils import parse_location
+from transit_collector.gis import GISProcessor
 
 
 class Exporter:
@@ -17,18 +17,21 @@ class Exporter:
         self.db = db
 
     def export_all(self, out_dir: str | Path) -> dict[str, str]:
+        """Export relational tables plus standards-compliant GIS layers."""
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
 
-        files = {}
+        files: dict[str, str] = {}
         files["lines_csv"] = str(self._export_lines_csv(out / "bus_lines.csv"))
         files["line_stops_csv"] = str(self._export_line_stops_csv(out / "bus_line_stops.csv"))
         files["stations_csv"] = str(self._export_stations_csv(out / "stations_merged.csv"))
         files["station_lines_csv"] = str(self._export_station_lines_csv(out / "station_lines.csv"))
         files["raw_stops_csv"] = str(self._export_raw_stops_csv(out / "stops_raw.csv"))
-        files["lines_geojson"] = str(self._export_lines_geojson(out / "bus_lines.geojson"))
-        files["stations_geojson"] = str(self._export_stations_geojson(out / "stations_merged.geojson"))
         files["xlsx"] = str(self._export_xlsx(out / "公交线路与站点.xlsx"))
+
+        gis_files = GISProcessor(self.db).export_base_layers(out, write_shp=True)
+        files.update(gis_files)
+
         files["summary"] = str(self._export_summary(out / "summary.json"))
         return files
 
@@ -36,10 +39,10 @@ class Exporter:
         cur = self.db.conn.execute(query)
         headers = [d[0] for d in cur.description]
         with path.open("w", encoding="utf-8-sig", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(headers)
+            writer = csv.writer(f)
+            writer.writerow(headers)
             for row in cur:
-                w.writerow([row[h] for h in headers])
+                writer.writerow([row[h] for h in headers])
         return path
 
     def _export_lines_csv(self, path):
@@ -90,66 +93,6 @@ class Exporter:
             SELECT stop_id,name,norm_name,longitude,latitude,adcode,citycode,source
             FROM raw_stops ORDER BY name,stop_id
         """)
-
-    def _export_lines_geojson(self, path: Path):
-        features = []
-        for row in self.db.conn.execute(
-            "SELECT line_id,name,type,start_stop,end_stop,company,status,polyline FROM bus_lines"
-        ):
-            coords = []
-            for token in (row["polyline"] or "").split(";"):
-                lon, lat = parse_location(token)
-                if lon is not None and lat is not None:
-                    coords.append([lon, lat])
-            if len(coords) < 2:
-                continue
-            features.append({
-                "type": "Feature",
-                "properties": {
-                    "line_id": row["line_id"],
-                    "name": row["name"],
-                    "type": row["type"],
-                    "start_stop": row["start_stop"],
-                    "end_stop": row["end_stop"],
-                    "company": row["company"],
-                    "status": row["status"],
-                    "coord_system": "AMap/GCJ-02",
-                },
-                "geometry": {"type": "LineString", "coordinates": coords},
-            })
-        path.write_text(json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False), "utf-8")
-        return path
-
-    def _export_stations_geojson(self, path: Path):
-        features = []
-        rows = self.db.conn.execute("""
-            SELECT sg.station_id,sg.name,sg.longitude,sg.latitude,sg.member_count,sg.line_count,
-                   GROUP_CONCAT(DISTINCT bl.name) AS line_names
-            FROM station_groups sg
-            LEFT JOIN station_lines sl ON sl.station_id=sg.station_id
-            LEFT JOIN bus_lines bl ON bl.line_id=sl.line_id
-            GROUP BY sg.station_id
-        """)
-        for row in rows:
-            if row["longitude"] is None or row["latitude"] is None:
-                continue
-            features.append({
-                "type": "Feature",
-                "properties": {
-                    "station_id": row["station_id"],
-                    "name": row["name"],
-                    "member_count": row["member_count"],
-                    "line_count": row["line_count"],
-                    "line_names": row["line_names"] or "",
-                    "coord_system": "AMap/GCJ-02",
-                },
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [row["longitude"], row["latitude"]],
-                },
-            })
-        path.write_text(json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False), "utf-8")
-        return path
 
     def _sheet_from_query(self, wb: Workbook, title: str, query: str):
         ws = wb.create_sheet(title)
@@ -212,11 +155,17 @@ class Exporter:
             "counts": counts,
             "scope": self.db.get_meta("scope", ""),
             "completed": self.db.get_meta("completed", "0"),
-            "coordinate_system": "AMap/GCJ-02",
+            "raw_coordinate_system": "AMap/GCJ-02",
+            "gis_coordinate_reference_system": (
+                "GIS outputs use EPSG:4326 after approximate iterative GCJ-02 -> WGS84 conversion"
+            ),
+            "primary_spatial_format": "GeoPackage",
             "notes": [
                 "stations_merged 为按站名 + 空间距离聚合后的站点。",
                 "bus_line_stops 保留每条线路的站点序号与原始坐标。",
-                "高德 POI 搜索与公交高级 API 有配额和检索上限，结果应结合实际业务进行抽检。",
+                "transit_gis.gpkg 包含 bus_stations、bus_routes、route_stops 标准矢量图层。",
+                "shp/ 目录提供 ArcGIS 兼容 Shapefile；GeoPackage 应作为优先交换格式。",
+                "高德 POI 搜索与公交高级 API 有配额和检索上限，正式成果建议结合主管部门台账抽检。",
             ],
         }
         path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), "utf-8")
