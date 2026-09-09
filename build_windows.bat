@@ -11,6 +11,10 @@ py -m PyInstaller ^
   --windowed ^
   --name TransitCollector ^
   --collect-all keyring ^
+  --collect-all geopandas ^
+  --collect-all pyogrio ^
+  --collect-all pyproj ^
+  --collect-all shapely ^
   app.py
 
 echo.
