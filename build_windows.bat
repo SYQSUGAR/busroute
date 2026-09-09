@@ -15,6 +15,7 @@ py -m PyInstaller ^
   --collect-all pyogrio ^
   --collect-all pyproj ^
   --collect-all shapely ^
+  --collect-all transbigdata ^
   app.py
 
 echo.
