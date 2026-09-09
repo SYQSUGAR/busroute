@@ -99,6 +99,9 @@ class IntegratedMainWindow(MainWindow):
         super().__init__()
         self.setWindowTitle("公交线路与站点 GIS 采集分析器 · 高德 Web 服务")
         self.export_btn.setText("导出 CSV / Excel / GIS")
+        for label in self.findChildren(QLabel):
+            if label.text().startswith("官方 API ·"):
+                label.setText("官方 API · 行政区限定 · 断点续采 · GeoPackage / SHP · GIS 空间分析")
         self.gis_thread = None
         self._add_gis_tab()
 
@@ -204,8 +207,19 @@ class IntegratedMainWindow(MainWindow):
         self.tabs.addTab(tab, "GIS分析")
 
     def crawl_done(self, db_path):
-        super().crawl_done(db_path)
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.export_btn.setEnabled(True)
+        self.stage_label.setText("采集完成")
+        self.progress_bar.setValue(100)
+        self.last_db_path = Path(db_path)
         self.gis_db_edit.setText(str(db_path))
+        self.refresh_preview()
+        QMessageBox.information(
+            self,
+            "完成",
+            "采集完成。可以导出 CSV / Excel / GeoPackage / SHP，或进入“GIS分析”计算公交站服务覆盖率。",
+        )
 
     def use_current_db(self):
         path = self.last_db_path
