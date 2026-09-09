@@ -23,7 +23,7 @@ jobs:
 
       - name: Compile
         run: |
-          python -m py_compile app.py transit_collector/gis.py transit_collector/exporter.py transit_collector/ui/integrated_window.py
+          python -m py_compile app.py transit_collector/gis.py transit_collector/exporter.py transit_collector/transbigdata_backend.py transit_collector/transbigdata_adapter.py transit_collector/ui/integrated_window.py transit_collector/ui/transbigdata_window.py
 
       - name: Unit tests
         run: |
