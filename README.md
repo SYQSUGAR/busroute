@@ -1,18 +1,103 @@
-# 公交线路与站点 GIS 采集分析器
+# 公交数据采集与 GIS 分析工作台
 
-面向 **城市体检 / 交通分析 / GIS 数据生产** 的 Windows 桌面工具。当前版本 `v0.3.0` 支持两套公交数据源：
+面向 **城市体检 / 交通分析 / GIS 数据生产** 的 Windows 桌面工具。当前版本为 `v0.4.0`。
 
-- **TransBigData / 百度线路（默认、推荐）**：公交线路和站点抓取不需要高德 Key；
-- **高德 Web 服务（保留原模式）**：使用高德 Web Service Key，通过行政区、公交站 POI、公交线路 ID 链路采集。
+当前支持两套公交数据源：
 
-采集完成后统一进入 SQLite → GeoPandas/Shapely → GeoPackage / Shapefile → 服务覆盖分析的 GIS 流程。
+- **TransBigData / 百度线路（默认、推荐）**：不需要高德 Key；
+- **高德 Web 服务（备用）**：使用高德 Web Service Key，通过行政区、公交站 POI、线路 ID 链路采集。
 
-## 为什么改成 TransBigData 模式
+采集完成后统一进入：
 
-旧版脚本的核心逻辑是：
+```text
+SQLite
+→ 线路/站点关系整理
+→ 合并物理站点
+→ GeoPandas / Shapely
+→ GeoPackage / Shapefile
+→ 公交站服务覆盖分析
+```
+
+## v0.4 的核心变化：从“按钮工具”改成“任务工作流”
+
+v0.4 不再只关注“能不能爬、能不能导出”，而是增加项目状态、任务锁定、依赖检查、断点重试、部分数据保护、日志和成果登记。
+
+每个公交 SQLite 数据库旁会自动创建项目目录：
+
+```text
+<database_stem>_project/
+├─ project.json
+├─ logs/
+├─ exports/
+├─ gis/
+└─ backups/
+```
+
+旧版 `v0.3` 的 SQLite 可以直接打开，不需要迁移数据库。
+
+项目顶部会显示：
+
+```text
+当前项目
+数据源
+数据库
+任务状态
+站点数据是否最新
+```
+
+主采集页和 GIS 页共用同一个当前数据库，避免出现“主页面操作榆林、GIS 页面却指向汉中数据库”的状态错位。
+
+完整建设说明见：`docs/V0.4_WORKFLOW.md`。
+
+## 任务状态
+
+当前任务状态统一管理为：
+
+```text
+NEW
+READY
+DISCOVERING
+CRAWLING
+PAUSING
+PAUSED
+POSTPROCESSING
+COMPLETED
+PARTIAL
+FAILED
+```
+
+用户开始采集以后，影响任务的配置会锁定，包括：
+
+- 数据源
+- 城市/行政区
+- 扫描模式
+- 额外线路关键词
+- 请求参数
+- 站点合并半径
+- 输出目录
+
+这样不会出现“界面改成 80m，但后台仍按 120m 运行”的情况。
+
+## 打开已有项目 / 数据库
+
+v0.4 可以直接打开已有：
+
+```text
+*.sqlite
+*.db
+project.json
+```
+
+打开后整个应用统一切换到该数据库，并恢复线路、合并站点、GIS 当前数据库上下文。
+
+软件还会记录最近打开的数据库，下次启动自动恢复项目上下文。
+
+## TransBigData 线路发现
+
+旧脚本的核心逻辑是：
 
 ```python
-lines = getALLbusline(cityE)           # 8684.cn 获取全市线路名称
+lines = getALLbusline(cityE)  # 8684.cn 获取全市线路名称
 line, stop = transbigdata.getbusdata(
     city=city,
     keywords=lines,
@@ -21,33 +106,24 @@ line, stop = transbigdata.getbusdata(
 )
 ```
 
-其中真正获取公交线路几何和站点序列的是 `transbigdata.getbusdata`。旧脚本失效的主要原因是 **8684.cn 的城市公交线路目录不再可可靠使用**，并不是 TransBigData 的线路抓取逻辑本身必须依赖 8684。
+其中真正获取公交线路几何和站点序列的是 `transbigdata.getbusdata`。旧脚本失效的主要原因是 8684.cn 的城市线路目录不再可靠。
 
-新版因此移除了 `8684.cn`，改成：
+新版保留 TransBigData 抓线路/站点的方式，把线路名称发现替换为：
 
 ```text
-输入城市名
+输入城市
    ↓
 百度地图分页宽泛搜索
-（公交/专线/城际/机场/环线/旅游/高铁等）
+公交 / 专线 / 城际 / 机场 / 环线 / 旅游 / 高铁等
    ↓
 数字线路 + 常见前缀扫描
-1-999 路 + K/B/Y/夜/游/快
    ↓
 线路关键词去重
    ↓
 transbigdata.getbusdata(...)
-   ↓
-线路 LineString + 站点序列 Point
 ```
 
-也就是说，**仍然使用你原来 TransBigData 的公交抓取方式**，只是把失效的“线路名称清单来源”换掉了。
-
-## TransBigData 线路发现模式
-
-桌面端新增“数据源”和“线路扫描”设置。
-
-### 完整扫描（默认）
+### 完整扫描
 
 - `1路` ～ `999路`
 - `K1路` ～ `K199路`
@@ -56,102 +132,168 @@ transbigdata.getbusdata(...)
 - `夜1路` ～ `夜199路`
 - `游1路` ～ `游199路`
 - `快1路` ～ `快199路`
-- 同时分页检索公交、专线、城际、机场、环线、快线、夜班、旅游、高铁等命名线路
-- 支持用户额外填写当地特殊线路名称，例如 `榆横城际公交`
+- 同时分页搜索公交、专线、城际、机场、环线、快线、夜班、旅游、高铁等命名线路
+- 支持人工补充特殊线路关键词
 
 ### 快速扫描
 
-用于先测试城市是否可正常抓取：
-
 - 数字线路扫描到 `300路`
 - 常见前缀扫描到 `99路`
-- 命名线路分页深度较低
+- 用于先验证城市是否能正常抓取
 
-完整扫描覆盖面更高，但请求数量更大。
+## v0.4 断点与失败重试
 
-## 断点续采
+TransBigData 任务现在分层保存状态。
 
-TransBigData 模式不再一次性把所有工作放在内存中。SQLite 新增状态表：
-
-- `tbd_probe`：记录哪些线路关键词已经探测；
-- `tbd_line_keywords`：记录已经发现的实际线路关键词；
-- `tbd_fetch_state`：记录哪些线路已经交给 TransBigData 获取。
-
-中途停止或程序关闭后，再次选择同一城市和同一输出目录即可继续。
-
-数据库文件示例：
+线路名称精确探测：
 
 ```text
-transit_tbd_榆林市.sqlite
+tbd_probe
 ```
 
-## TransBigData 的数据来源说明
-
-当前固定使用：
+命名线路分页搜索：
 
 ```text
-transbigdata==0.5.3
+tbd_broad_probe
 ```
 
-`getbusdata` 内部使用百度地图网页搜索获取城市代码、公交线路 UID、线路几何和站点信息。该方法不要求用户提供高德 Web Key。
-
-需要注意：这属于 TransBigData 已有的数据获取实现，其依赖的百度网页端请求不是面向第三方长期稳定承诺的正式开放 API，未来百度网页接口变化时仍可能需要适配。因此软件保留高德 Web 服务采集模式作为另一条数据链。
-
-同时，不论是关键词扫描还是第三方地图底库，都不能承诺数学意义上的“100% 全量”。正式成果建议与公交企业/交通主管部门线路台账抽检。
-
-## 坐标处理
-
-TransBigData `getbusdata` 返回 WGS84 数据。
-
-为让两套采集源共用同一个 SQLite 和 GIS 处理流程，程序内部会把 TransBigData WGS84 临时标准化到 GCJ-02 数据库存储体系；GIS 导出时再通过统一的坐标转换流程生成 `EPSG:4326` 图层。
-
-因此对外 GIS 成果仍统一为：
+真正线路抓取：
 
 ```text
-EPSG:4326 / WGS84
+tbd_fetch_state
 ```
 
-500m Buffer、面积和覆盖率分析不会直接在经纬度上计算，而是自动估算当地 UTM 米制投影，或使用用户指定的米制 CRS。
+宽泛搜索按 `关键词 + 页码` 单独记录状态，不再因为某一页失败就把整个阶段错误标记为完成。
+
+失败任务自动重试，默认最多 3 次；多次失败后标记为：
+
+```text
+failed_final
+```
+
+TransBigData 批次抓取失败时会自动拆分批次，例如：
+
+```text
+12 条失败
+→ 6 + 6
+→ 3 + 3
+→ 最终隔离到单条异常线路
+```
+
+如果最终仍有失败项，数据库会保留为 `PARTIAL`，不会错误标记成完整成果。
+
+## 安全停止与退出
+
+运行中点击“停止”不会强杀进程，而是请求安全停止。
+
+运行中直接关闭软件时会询问：
+
+```text
+安全停止并退出？
+```
+
+程序停止提交新请求并等待当前请求结束。如果无法在限定时间内安全结束，则取消退出，避免数据库处于不明确状态。
+
+## 站点合并与数据依赖
+
+地图数据常把道路两侧同名站作为不同记录。程序按照：
+
+```text
+标准化站名相同
++
+空间距离 <= 合并半径
+```
+
+生成物理公交站，默认半径 `120m`。
+
+v0.4 为站点合并增加依赖检查，记录：
+
+- 当前原始线路/站点数据签名
+- 当前合并半径
+- 当前合并站点数量
+
+如果：
+
+```text
+120m → 80m
+```
+
+或者继续采集导致原始站点发生变化，界面会提示：
+
+```text
+站点数据：⚠ 需更新
+```
+
+执行导出或 GIS 分析前会统一检查，不再依赖“先点一次导出”才能让 GIS 使用新站点结果。
+
+## 部分数据保护
+
+如果任务尚未完成，仍可以基于当前数据库导出或做分析，但程序会明确提示：
+
+```text
+当前为部分数据
+不能视为完整成果
+```
+
+采集正在运行时，不允许直接执行正式 GIS 分析。
+
+## 数据关系
+
+SQLite 核心关系为：
+
+```text
+bus_lines
+    ↓
+line_stops
+    ↓
+raw_stops
+    ↓
+station_members
+    ↓
+station_groups
+    ↓
+station_lines
+```
+
+因此既能回答：
+
+- 某个公交站经过哪些线路；
+- 某条线路经过哪些站；
+- 每个站在线路中的站序是多少。
 
 ## GIS 输出
 
-一键导出会生成：
+基础 GIS 输出：
 
 ```text
-CSV
-├─ bus_lines.csv
-├─ bus_line_stops.csv
-├─ stations_merged.csv
-├─ station_lines.csv
-└─ stops_raw.csv
-
-Excel
-└─ 公交线路与站点.xlsx
-
-GeoPackage
-└─ transit_gis.gpkg
-   ├─ bus_stations
-   ├─ bus_routes
-   └─ route_stops
-
-Shapefile
-└─ shp/
-   ├─ bus_stations.shp
-   ├─ bus_routes.shp
-   └─ route_stops.shp
+transit_gis.gpkg
+├─ bus_stations
+├─ bus_routes
+└─ route_stops
 ```
 
-### `bus_stations`
+兼容输出：
 
-合并后的物理公交站点：
+```text
+shp/
+├─ bus_stations.shp
+├─ bus_routes.shp
+└─ route_stops.shp
+```
+
+同时保留 CSV、Excel 和 GeoJSON。
+
+### bus_stations
+
+合并后的物理公交站：
 
 - `station_id`
 - 站点名称
-- 经过线路数
+- 经过线路数量
 - 经过线路名称/ID
 - Point geometry
 
-### `bus_routes`
+### bus_routes
 
 一条线路/方向一条记录：
 
@@ -161,9 +303,9 @@ Shapefile
 - 方向
 - LineString geometry
 
-### `route_stops`
+### route_stops
 
-保留线路—站点—站序关系：
+保留线路—站点—站序：
 
 - `line_id`
 - `station_id`
@@ -172,36 +314,36 @@ Shapefile
 - `stop_name`
 - Point geometry
 
-因此既能回答“这个站经过哪些线路”，也能回答“一条线路按什么顺序经过哪些站”。
+## 坐标处理
 
-## 站点合并
+TransBigData `getbusdata` 返回 WGS84 数据；高德 Web Service 原始数据为 GCJ-02。
 
-地图数据常把道路两侧同名站点作为不同记录。程序当前按照：
+当前两套来源共用同一 SQLite / GIS 处理链，对外 GIS 基础成果统一生成：
 
 ```text
-标准化站名相同 + 空间距离 <= 合并半径
+EPSG:4326 / WGS84
 ```
 
-聚合物理站点，默认半径 `120m`，桌面端可调整。
+500m Buffer、面积和覆盖率不会直接在经纬度上计算，而是转换至本地米制投影。程序默认自动估算 UTM，也支持用户手动指定米制 CRS。
 
-## 公交站 500m 覆盖分析
+## 公交站服务覆盖分析
 
-“GIS分析”页签可以选择：
+GIS 页可以输入：
 
 - 建成区
 - 居住用地
 - 社区
 - 街区
-- 其他 Polygon / MultiPolygon 图层
+- 其他 Polygon / MultiPolygon
 
-程序自动执行：
+程序执行：
 
 ```text
 公交站点
    ↓
-投影至米制 CRS
+米制投影
    ↓
-500m Buffer
+Buffer（默认 500m）
    ↓
 Union
    ↓
@@ -212,11 +354,21 @@ Union
 覆盖率
 ```
 
-并输出 `coverage_analysis.gpkg`、统计 JSON 以及可选 SHP。
+并输出：
+
+```text
+coverage_analysis.gpkg
+├─ analysis_zones
+├─ service_area
+├─ covered_area
+└─ uncovered_area
+```
+
+如果输入范围包含多个社区/街区，还会逐要素统计覆盖面积和覆盖率。
 
 ## 高德 Web 服务模式
 
-原来的高德采集链仍然保留：
+高德模式保留原采集链：
 
 ```text
 行政区边界
@@ -225,9 +377,34 @@ Union
 → 线路 ID 详情
 ```
 
-该模式必须使用 **服务平台=Web服务** 的高德 Key。JS API Key / `securityJsCode` 不能替代 Web Service Key。
+必须使用：
 
-TransBigData 模式则无需填写高德 Key。
+```text
+服务平台 = Web服务
+```
+
+类型的高德 Key。
+
+JS API Key / `securityJsCode` 不能替代 Web Service Key。
+
+## 日志与成果登记
+
+每次采集自动创建独立日志文件：
+
+```text
+<project>/logs/
+```
+
+`project.json` 同时记录：
+
+- 当前任务状态
+- 最后一次运行参数
+- 日志文件
+- 生成的 CSV / Excel / GIS / 分析成果
+- 生成时间
+- 数据源签名
+
+便于项目追溯。
 
 ## 安装运行
 
@@ -252,7 +429,7 @@ run_windows.bat
 build_windows.bat
 ```
 
-PyInstaller 会一起收集：
+PyInstaller 会收集：
 
 - PySide6
 - GeoPandas
@@ -267,8 +444,6 @@ PyInstaller 会一起收集：
 dist/TransitCollector/
 ```
 
-GitHub Actions 也保留自动测试和 Windows 构建流程。
-
 ## 项目结构
 
 ```text
@@ -277,24 +452,42 @@ GitHub Actions 也保留自动测试和 Windows 构建流程。
 ├─ transit_collector/
 │  ├─ api/amap.py
 │  ├─ crawler.py
-│  ├─ transbigdata_backend.py
-│  ├─ transbigdata_adapter.py
 │  ├─ db.py
 │  ├─ exporter.py
 │  ├─ gis.py
-│  ├─ utils.py
+│  ├─ project.py
+│  ├─ workflow.py
+│  ├─ transbigdata_backend.py
+│  ├─ transbigdata_adapter.py
+│  ├─ transbigdata_v4.py
 │  └─ ui/
 │     ├─ main_window.py
 │     ├─ integrated_window.py
-│     └─ transbigdata_window.py
+│     ├─ transbigdata_window.py
+│     └─ workbench_v4.py
 ├─ tests/
 │  ├─ test_core.py
 │  ├─ test_gis.py
-│  └─ test_transbigdata_backend.py
+│  ├─ test_transbigdata_backend.py
+│  └─ test_workflow_v4.py
+├─ docs/
+│  └─ V0.4_WORKFLOW.md
 ├─ requirements.txt
-├─ build_windows.bat
-└─ .github/workflows/
+└─ build_windows.bat
 ```
+
+## 后续建设
+
+v0.5 计划继续完善：
+
+- 完整数据版本号和 dirty 依赖传播
+- 成果历史版本管理
+- 项目级 CRS / CGCS2000
+- 数据质量检查
+- 站点人工合并/拆分
+- 更完整的项目首页
+
+v0.6 再扩展城市体检交通 GIS 工具箱，例如公交服务空白区、公交站密度、公交线路密度、社区公交服务、行政村公交覆盖等。
 
 ## License
 
